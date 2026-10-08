@@ -7,6 +7,9 @@
 //
 
 #import "StreamManager.h"
+#if !TARGET_OS_TV
+#import "EmbeddedTailscale.h"
+#endif
 #import "CryptoManager.h"
 #import "HttpManager.h"
 #import "Utils.h"
@@ -96,6 +99,16 @@
     
     // Populate RTSP session URL from launch/resume response
     _config.rtspSessionUrl = sessionUrl;
+#if !TARGET_OS_TV
+    if ([EmbeddedTailscale matchesAddress:_config.host] && sessionUrl != nil) {
+        NSURLComponents *rtsp = [NSURLComponents componentsWithString:sessionUrl];
+        if (rtsp.port.intValue != 48010 ||
+            !([rtsp.scheme isEqualToString:@"rtsp"] || [rtsp.scheme isEqualToString:@"rtspenc"])) {
+            [_callbacks launchFailed:@"Embedded Tailscale requires Sunshine's default RTSP port (48010)."];
+            return;
+        }
+    }
+#endif
     
     // Initializing the renderer must be done on the main thread
     dispatch_async(dispatch_get_main_queue(), ^{

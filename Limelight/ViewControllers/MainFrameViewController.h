@@ -22,4 +22,6 @@
 @property (weak, nonatomic) IBOutlet UIBarButtonItem *upButton;
 #endif
 
+// Adds a PC by address; with pair set it is opened right away to pair.
+- (void) addHostWithAddress:(NSString*)hostAddress pair:(BOOL)pair;
 @end

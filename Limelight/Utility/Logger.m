@@ -7,6 +7,7 @@
 //
 
 #import "Logger.h"
+#import <os/log.h>
 
 static LogLevel LoggerLogLevel = LOG_I;
 
@@ -57,5 +58,8 @@ void LogTagv(LogLevel level, NSString* tag, NSString* fmt, va_list args) {
     } else {
         prefixedString = [NSString stringWithFormat:@"%@ %@", levelPrefix, fmt];
     }
-    NSLogv(prefixedString, args);
+    // os_log with a public argument so device logs keep the text; NSLog
+    // output is redacted as <private> outside a debugger.
+    NSString* message = [[NSString alloc] initWithFormat:prefixedString arguments:args];
+    os_log(OS_LOG_DEFAULT, "%{public}s", message.UTF8String);
 }

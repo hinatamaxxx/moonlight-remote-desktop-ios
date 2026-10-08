@@ -92,7 +92,7 @@
     NSData* salt = [Utils randomBytes:16];
     NSData* saltedPIN = [self concatData:salt with:[PIN dataUsingEncoding:NSUTF8StringEncoding]];
 
-    Log(LOG_I, @"PIN: %@, salt %@", PIN, salt);
+    Log(LOG_I, @"Pairing challenge prepared");
     
     HttpResponse* pairResp = [[HttpResponse alloc] init];
     [_httpManager executeRequestSynchronously:[HttpRequest requestForResponse:pairResp withUrlRequest:[_httpManager newPairRequest:salt clientCert:_clientCert]]];

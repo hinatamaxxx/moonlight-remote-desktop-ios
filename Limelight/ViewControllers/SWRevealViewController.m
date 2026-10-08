@@ -669,8 +669,28 @@ const int FrontViewPositionNone = 0xff;
 
 - (UIViewController *)childViewControllerForStatusBarHidden
 {
-    UIViewController *controller = [self childViewControllerForStatusBarStyle];
-    return controller;
+    // The scene's root owns Moonlight's full-screen presentation. Forwarding
+    // to a navigation controller restores a status-bar inset on recent iOS.
+    return nil;
+}
+
+// Portrait shows the status bar (clock, battery); landscape stays full screen.
+- (BOOL)prefersStatusBarHidden
+{
+    return self.view.bounds.size.width > self.view.bounds.size.height;
+}
+
+- (UIStatusBarStyle)preferredStatusBarStyle
+{
+    return UIStatusBarStyleLightContent;
+}
+
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator
+{
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        [self setNeedsStatusBarAppearanceUpdate];
+    } completion:nil];
 }
 
 

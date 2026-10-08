@@ -13,6 +13,13 @@
 @property (strong, nonatomic) UIWindow *window;
 @property (strong, nonatomic) NSString *pcUuidToLoad;
 @property (strong, nonatomic) void (^shortcutCompletionHandler)(BOOL);
+#if !TARGET_OS_TV
+// Orientations allowed while something needs a fixed orientation (text
+// input is portrait). 0 follows the device.
+@property (nonatomic) UIInterfaceOrientationMask orientationLock;
+// Rotates the interface to one of the orientations in mask.
+- (void)rotateToOrientations:(UIInterfaceOrientationMask)mask;
+#endif
 
 @property (readonly, strong, nonatomic) NSManagedObjectContext *managedObjectContext;
 @property (readonly, strong, nonatomic) NSManagedObjectModel *managedObjectModel;

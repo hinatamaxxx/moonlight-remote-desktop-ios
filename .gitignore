@@ -4,3 +4,6 @@
 .DS_Store
 Build
 DerivedData
+/embedded-build/
+/verification/
+*.ipa

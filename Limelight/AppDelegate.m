@@ -7,6 +7,127 @@
 //
 
 #import "AppDelegate.h"
+#if !TARGET_OS_TV
+#import "EmbeddedTailscale.h"
+#import "Localization.h"
+#import "SWRevealViewController.h"
+#import "MainFrameViewController.h"
+#import "SettingsViewController.h"
+
+// The app's root: the standard tab bar (Liquid Glass on iOS 26+) with Home,
+// Tailscale and Settings. Status bar and system gestures follow the screen
+// shown in the selected tab, so the stream can hide the home indicator.
+@interface MoonlightTabBarController : UITabBarController
+@end
+
+@implementation MoonlightTabBarController
+- (UIViewController *)visibleContent {
+    UIViewController *controller = self.selectedViewController;
+    if ([controller isKindOfClass:[UINavigationController class]]) {
+        controller = ((UINavigationController *)controller).topViewController;
+    }
+    return controller;
+}
+// Portrait shows the status bar (clock, battery); landscape stays full screen.
+- (BOOL)prefersStatusBarHidden {
+    return self.view.bounds.size.width > self.view.bounds.size.height;
+}
+- (UIStatusBarStyle)preferredStatusBarStyle {
+    return UIStatusBarStyleLightContent;
+}
+- (UIViewController *)childViewControllerForStatusBarHidden {
+    return nil;
+}
+- (UIViewController *)childViewControllerForStatusBarStyle {
+    return nil;
+}
+- (UIViewController *)childViewControllerForHomeIndicatorAutoHidden {
+    return self.visibleContent;
+}
+- (UIViewController *)childViewControllerForScreenEdgesDeferringSystemGestures {
+    return self.visibleContent;
+}
+- (UIViewController *)childViewControllerForPointerLock {
+    return self.visibleContent;
+}
+- (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
+    [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+    [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> context) {
+        [self setNeedsStatusBarAppearanceUpdate];
+    } completion:nil];
+}
+@end
+
+// Builds the tab bar from the storyboard's screens. The storyboard roots them
+// in the old side-drawer controller; take Home and Settings out of it.
+static UIViewController *MoonlightMakeRoot(UIViewController *storyboardRoot) {
+    if (![storyboardRoot isKindOfClass:[SWRevealViewController class]]) {
+        return storyboardRoot;
+    }
+    SWRevealViewController *reveal = (SWRevealViewController *)storyboardRoot;
+    [reveal loadViewIfNeeded];
+    UIViewController *home = reveal.frontViewController;
+    UIViewController *settings = reveal.rearViewController;
+    if (home == nil || settings == nil) {
+        return storyboardRoot;
+    }
+    for (UIViewController *child in @[home, settings]) {
+        [child willMoveToParentViewController:nil];
+        [child.view removeFromSuperview];
+        [child removeFromParentViewController];
+    }
+
+    home.tabBarItem = [[UITabBarItem alloc] initWithTitle:ML(@"Home") image:[UIImage systemImageNamed:@"house"] selectedImage:[UIImage systemImageNamed:@"house.fill"]];
+
+    MainFrameViewController *mainFrame = nil;
+    if ([home isKindOfClass:[UINavigationController class]]) {
+        mainFrame = (MainFrameViewController *)((UINavigationController *)home).viewControllers.firstObject;
+    }
+    MoonlightTabBarController *tabs = [[MoonlightTabBarController alloc] init];
+    __weak MoonlightTabBarController *weakTabs = tabs;
+    __weak MainFrameViewController *weakMainFrame = mainFrame;
+    UIViewController *tailscale = [EmbeddedTailscale tabControllerOnPeerSelected:^(NSString *address) {
+        weakTabs.selectedIndex = 0;
+        [weakMainFrame addHostWithAddress:address pair:YES];
+    }];
+    tailscale.tabBarItem = [[UITabBarItem alloc] initWithTitle:@"Tailscale" image:[EmbeddedTailscale logoImage] selectedImage:nil];
+
+    MoonlightSettingsViewController *settingsList = [[MoonlightSettingsViewController alloc] initWithStyle:UITableViewStyleInsetGrouped];
+    UINavigationController *settingsNavigation = [[UINavigationController alloc] initWithRootViewController:settingsList];
+    settingsNavigation.tabBarItem = [[UITabBarItem alloc] initWithTitle:ML(@"Settings") image:[UIImage systemImageNamed:@"gearshape"] selectedImage:[UIImage systemImageNamed:@"gearshape.fill"]];
+
+    tabs.viewControllers = @[home, tailscale, settingsNavigation];
+    return tabs;
+}
+
+@interface MoonlightSceneDelegate : UIResponder <UIWindowSceneDelegate>
+@property (strong, nonatomic) UIWindow *window;
+@end
+
+@implementation MoonlightSceneDelegate
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)connectionOptions {
+    AppDelegate *delegate = (AppDelegate *)UIApplication.sharedApplication.delegate;
+    delegate.window = self.window;
+    self.window.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    self.window.rootViewController = MoonlightMakeRoot(self.window.rootViewController);
+}
+// In case the storyboard's root arrives after willConnectToSession
+- (void)sceneWillEnterForeground:(UIScene *)scene {
+    if ([self.window.rootViewController isKindOfClass:[SWRevealViewController class]]) {
+        self.window.rootViewController = MoonlightMakeRoot(self.window.rootViewController);
+    }
+}
+- (void)sceneDidEnterBackground:(UIScene *)scene {
+    [(AppDelegate *)UIApplication.sharedApplication.delegate saveContext];
+}
+- (void)windowScene:(UIWindowScene *)windowScene performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem completionHandler:(void (^)(BOOL))completionHandler {
+    AppDelegate *delegate = (AppDelegate *)UIApplication.sharedApplication.delegate;
+    delegate.pcUuidToLoad = shortcutItem.userInfo[@"UUID"];
+    delegate.shortcutCompletionHandler = completionHandler;
+}
+@end
+#endif
+
 
 @implementation AppDelegate
 
@@ -24,6 +145,7 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
 #if !TARGET_OS_TV
+    [EmbeddedTailscale restore];
     UIApplicationShortcutItem* shortcut = [launchOptions valueForKey:UIApplicationLaunchOptionsShortcutItemKey];
     if (shortcut != nil) {
         _pcUuidToLoad = (NSString*)[shortcut.userInfo objectForKey:@"UUID"];
@@ -33,9 +155,59 @@ static NSString* DB_NAME = @"Limelight_iOS.sqlite";
 }
 
 #if !TARGET_OS_TV
+- (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+    if (options.shortcutItem != nil) {
+        self.pcUuidToLoad = options.shortcutItem.userInfo[@"UUID"];
+    }
+    UISceneConfiguration *configuration = [[UISceneConfiguration alloc] initWithName:@"Moonlight" sessionRole:session.role];
+    configuration.delegateClass = MoonlightSceneDelegate.class;
+    NSString *storyboardName = UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? @"iPad" : @"iPhone";
+    configuration.storyboard = [UIStoryboard storyboardWithName:storyboardName bundle:nil];
+    return configuration;
+}
+
 - (void)application:(UIApplication *)application performActionForShortcutItem:(UIApplicationShortcutItem *)shortcutItem completionHandler:(void (^)(BOOL succeeded))completionHandler {
     _pcUuidToLoad = (NSString*)[shortcutItem.userInfo objectForKey:@"UUID"];
     _shortcutCompletionHandler = completionHandler;
+}
+
+// Takes precedence over the Info.plist orientations, which packaging may
+// replace with the original landscape-only list.
+- (UIInterfaceOrientationMask)application:(UIApplication *)application supportedInterfaceOrientationsForWindow:(UIWindow *)window {
+    if (_orientationLock != 0) {
+        return _orientationLock;
+    }
+    return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskAllButUpsideDown;
+}
+
+- (void)setOrientationLock:(UIInterfaceOrientationMask)orientationLock {
+    _orientationLock = orientationLock;
+    if (@available(iOS 16.0, *)) {
+        UIViewController *controller = self.window.rootViewController;
+        while (controller != nil) {
+            [controller setNeedsUpdateOfSupportedInterfaceOrientations];
+            controller = controller.presentedViewController;
+        }
+    }
+    else {
+        [UIViewController attemptRotationToDeviceOrientation];
+    }
+}
+
+- (void)rotateToOrientations:(UIInterfaceOrientationMask)mask {
+    UIWindow *window = self.window;
+    if (@available(iOS 16.0, *)) {
+        UIWindowSceneGeometryPreferencesIOS *preferences = [[UIWindowSceneGeometryPreferencesIOS alloc] initWithInterfaceOrientations:mask];
+        [window.windowScene requestGeometryUpdateWithPreferences:preferences errorHandler:^(NSError *error) {
+            Log(LOG_W, @"Rotation request failed: %@", error);
+        }];
+    }
+    else {
+        UIInterfaceOrientation target = (mask & UIInterfaceOrientationMaskPortrait) ? UIInterfaceOrientationPortrait :
+            (mask & UIInterfaceOrientationMaskLandscapeLeft) ? UIInterfaceOrientationLandscapeLeft : UIInterfaceOrientationLandscapeRight;
+        [UIDevice.currentDevice setValue:@(target) forKey:@"orientation"];
+        [UIViewController attemptRotationToDeviceOrientation];
+    }
 }
 #endif
 

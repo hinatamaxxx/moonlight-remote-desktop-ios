@@ -39,3 +39,12 @@
 - (void) saveSettings;
 
 @end
+
+#if !TARGET_OS_TV
+// The Settings tab: an iOS-style list built in code
+@interface MoonlightSettingsViewController : UITableViewController
+// Opened from the stream: adds a Done button
+@property (nonatomic) BOOL duringStream;
+@property (nonatomic, copy) void (^onClose)(void);
+@end
+#endif

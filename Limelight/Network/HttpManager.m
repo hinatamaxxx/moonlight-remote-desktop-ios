@@ -7,6 +7,10 @@
 //
 
 #import "HttpManager.h"
+#if !TARGET_OS_TV
+#import "EmbeddedTailscale.h"
+#endif
+
 #import "HttpRequest.h"
 #import "CryptoManager.h"
 #import "TemporaryApp.h"
@@ -31,6 +35,7 @@
     
     TemporaryHost *_host; // May be nil
     NSString* _baseHTTPSURL;
+    BOOL _embeddedTailscale;
 }
 
 + (NSData*) fixXmlVersion:(NSData*) xmlData {
@@ -45,7 +50,11 @@
 }
 
 - (id) initWithHost:(TemporaryHost*) host {
-    self = [self initWithAddress:host.activeAddress httpsPort:host.httpsPort serverCert:host.serverCert];
+    NSString *address = host.activeAddress;
+#if !TARGET_OS_TV
+    address = [EmbeddedTailscale connectionAddressForHost:host];
+#endif
+    self = [self initWithAddress:address httpsPort:host.httpsPort serverCert:host.serverCert];
     _host = host;
     return self;
 }
@@ -60,6 +69,10 @@
     
     NSString* address = [Utils addressPortStringToAddress:hostAddressPortString];
     unsigned short port = [Utils addressPortStringToPort:hostAddressPortString];
+#if !TARGET_OS_TV
+    _embeddedTailscale = [EmbeddedTailscale matchesAddress:address];
+    address = [EmbeddedTailscale routedAddress:address];
+#endif
     
     // If this is an IPv6 literal, we must properly enclose it in brackets
     if ([address containsString:@":"]) {
@@ -182,6 +195,17 @@
 
 - (NSURLRequest*) createRequestFromString:(NSString*) urlString timeout:(int)timeout {
     NSURL* url = [[NSURL alloc] initWithString:urlString];
+    if (_embeddedTailscale &&
+        !(([url.scheme isEqualToString:@"http"] && url.port.intValue == 47989) ||
+          ([url.scheme isEqualToString:@"https"] && url.port.intValue == 47984))) {
+        // Never send unsupported remote ports to unrelated loopback services.
+        return nil;
+    }
+    if (_embeddedTailscale) {
+        // The first connection through the tailnet sets up the path, which
+        // can take longer than the LAN-oriented 2-5 second timeouts.
+        timeout = MAX(timeout, 15);
+    }
     NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
     [request setTimeoutInterval:timeout];
     return request;
@@ -281,7 +305,8 @@
                            config.gamepadMask, config.gamepadMask,
                            !config.multiController ? 1 : 0,
                            LiGetLaunchUrlQueryParameters()];
-    Log(LOG_I, @"Requesting: %@", urlString);
+    // The query includes the session input key. Log only the operation.
+    Log(LOG_I, @"Requesting stream operation: %@", verb);
     // This blocks while the app is launching
     return [self createRequestFromString:urlString timeout:LONG_TIMEOUT_SEC];
 }

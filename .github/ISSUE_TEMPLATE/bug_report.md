@@ -1,48 +1,28 @@
 ---
-name: Bug report
-about: Follow the troubleshooting guide before reporting a bug
-
+name: 不具合 / Bug report
+about: このフォークの不具合を報告する / Report a problem with this fork
 ---
-**READ ME FIRST!**
-If you're here because something basic is not working (like gamepad input, video, or similar), it's probably something specific to your setup, so make sure you've gone through the Troubleshooting Guide first: https://github.com/moonlight-stream/moonlight-docs/wiki/Troubleshooting
 
-If you still have trouble with basic functionality after following the guide, join our Discord server where there are many other volunteers who can help (or direct you back here if it looks like a Moonlight bug after all). https://moonlight-stream.org/discord
+## 起きたこと / What happened
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+期待した動作と、実際の動作を書いてください。 / Describe expected and actual behavior.
 
-**Steps to reproduce**
-Any special steps that are required for the bug to appear.
+## 再現手順 / Steps to reproduce
 
-**Screenshots**
-If applicable, add screenshots to help explain your problem. If the issue is related to video glitching or poor quality, please include screenshots.
+1.
+2.
 
-**Affected games**
-List the games you've tried that exhibit the issue. To see if the issue is game-specific, try streaming Steam Big Picture with Moonlight and see if the issue persists there.
+## 環境 / Environment
 
-**Other Moonlight clients**
-- Does the issue occur when using Moonlight on PC or Android?
+- Release tag:
+- iPhone model / iOS:
+- LiveContainer version:
+- PC OS / Sunshine version:
+- LAN or embedded Tailscale:
+- Text input issue: PC application, IME, and A/あ state:
 
-**Moonlight settings (please complete the following information)**
-- Have any settings been adjusted from defaults?
-- If so, which settings have been changed?
-- Does the problem still occur after reverting settings back to default?
+## 補足 / Additional details
 
-**Gamepad-related issues (please complete if problem is gamepad-related)**
-- Do you have any gamepads connected to your host PC directly?
-- If gamepad input is not working, does it work if you use Moonlight's on-screen controls?
-- Does the problem still remain if you stream the desktop and use https://html5gamepad.com to test your gamepad?
-  - Instructions for streaming the desktop can be found here: https://github.com/moonlight-stream/moonlight-docs/wiki/Setup-Guide
+関連する設定や画像があれば添えてください。ログや画像にログインURL、PIN、キー、個人情報を含めないでください。
 
-**Device details (please complete the following information)**
- - iOS/tvOS version: [e.g. iOS 14.2]
- - Device model: [e.g. iPhone 11 Pro]
-
-**Server PC details (please complete the following information)**
- - OS: [e.g. Windows 10 1809]
- - GeForce Experience version: [e.g. 3.16.0.140]
- - Nvidia GPU driver: [e.g. 417.35]
- - Antivirus and firewall software: [e.g. Windows Defender and Windows Firewall]
-
-**Additional context**
-Anything else you think may be relevant to the issue or special about your specific setup.
+Include relevant settings or screenshots. Remove login URLs, PINs, keys and personal information before sharing logs or images.

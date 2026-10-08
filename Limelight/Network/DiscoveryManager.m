@@ -7,6 +7,9 @@
 //
 
 #import "DiscoveryManager.h"
+#if !TARGET_OS_TV
+#import "EmbeddedTailscale.h"
+#endif
 #import "CryptoManager.h"
 #import "HttpManager.h"
 #import "Utils.h"
@@ -286,6 +289,9 @@
             existingHost.externalAddress = host.externalAddress;
         }
         existingHost.activeAddress = host.activeAddress;
+#if !TARGET_OS_TV
+        existingHost.activeAddress = [EmbeddedTailscale connectionAddressForHost:existingHost];
+#endif
         existingHost.state = host.state;
         return NO;
     }

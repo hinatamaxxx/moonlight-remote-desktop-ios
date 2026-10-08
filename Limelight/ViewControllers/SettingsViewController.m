@@ -9,6 +9,7 @@
 #import "SettingsViewController.h"
 #import "TemporarySettings.h"
 #import "DataManager.h"
+#import "Localization.h"
 
 #import <VideoToolbox/VideoToolbox.h>
 #import <AVFoundation/AVFoundation.h>
@@ -16,6 +17,14 @@
 @implementation SettingsViewController {
     NSInteger _bitrate;
     NSInteger _lastSelectedResolutionIndex;
+    // Storyboard frames of the controls. Rotation re-derives the layout from
+    // these instead of accumulating safe-area offsets.
+    NSMapTable<UIView*, NSValue*>* _baseFrames;
+    int _narrowFonts; // 0 = not applied yet, 1 = narrow, 2 = regular
+    // Controller rows (on-screen controls, multi-controller, A/B swap) are
+    // hidden; later rows move up by the space they used.
+    NSHashTable<UIView*>* _hiddenViews;
+    NSMapTable<UIView*, NSNumber*>* _rowShifts;
 }
 
 @dynamic overrideUserInterfaceStyle;
@@ -67,9 +76,135 @@ CGSize resolutionTable[RESOLUTION_TABLE_SIZE];
     return i - 1;
 }
 
+// Fit the fixed-width storyboard controls into the settings sheet, which is
+// narrower than the controls in portrait and wider in landscape.
+- (void)layoutControlsForVisibleWidth {
+    if (_baseFrames == nil) {
+        _baseFrames = [NSMapTable weakToStrongObjectsMapTable];
+        for (UIView* view in self.view.subviews) {
+            // Skip UIKit's private scroll indicators
+            if ([view isKindOfClass:[UIImageView class]] || [NSStringFromClass(view.class) hasPrefix:@"_"]) {
+                continue;
+            }
+            [_baseFrames setObject:[NSValue valueWithCGRect:view.frame] forKey:view];
+        }
+        [self computeHiddenControllerRows];
+    }
+
+    CGFloat inset = 0;
+    if (@available(iOS 11.0, *)) {
+        // HACK: The official safe area is much too large for our purposes
+        // so we'll just use the presence of any safe area to indicate we should
+        // pad by 20.
+        if (self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20) {
+            inset = 20;
+        }
+    }
+
+    CGFloat visibleWidth = self.view.bounds.size.width;
+    // The storyboard column is 450 points wide starting at x=16; center it
+    // when there is room and squeeze it otherwise.
+    const CGFloat columnWidth = 482;
+    if (visibleWidth > columnWidth + 2 * inset) {
+        inset = floor((visibleWidth - columnWidth) / 2);
+    }
+    BOOL narrow = visibleWidth - inset < columnWidth;
+
+    BOOL resized = NO;
+    for (UIView* view in _baseFrames) {
+        CGRect frame = [[_baseFrames objectForKey:view] CGRectValue];
+        frame.origin.x += inset;
+        frame.origin.y -= [[_rowShifts objectForKey:view] doubleValue];
+        view.hidden = [_hiddenViews containsObject:view];
+        frame.size.width = MAX(80, MIN(frame.size.width, visibleWidth - frame.origin.x - 12));
+        if (!CGRectEqualToRect(view.frame, frame)) {
+            resized |= view.frame.size.width != frame.size.width;
+            view.frame = frame;
+        }
+        if (_narrowFonts != (narrow ? 1 : 2) && [view isKindOfClass:[UISegmentedControl class]]) {
+            // Keep segments like "Safe Area" readable on phones in portrait
+            UISegmentedControl* control = (UISegmentedControl*)view;
+            control.apportionsSegmentWidthsByContent = YES;
+            [control setTitleTextAttributes:@{NSFontAttributeName: [UIFont systemFontOfSize:narrow ? 11 : 13]} forState:UIControlStateNormal];
+        }
+    }
+    _narrowFonts = narrow ? 1 : 2;
+
+    if (resized) {
+        [self updateResolutionDisplayViewText];
+    }
+}
+
+// Finds the controller selectors and their title labels (the label just
+// above each selector), and how far every later view moves up.
+- (void)computeHiddenControllerRows {
+    _hiddenViews = [NSHashTable weakObjectsHashTable];
+    _rowShifts = [NSMapTable weakToStrongObjectsMapTable];
+    NSMutableArray<NSValue*>* removedSpans = [NSMutableArray array]; // (top, height)
+    
+    for (UIView* selector in @[self.onscreenControlSelector, self.multiControllerSelector, self.swapABXYButtonsSelector]) {
+        if (selector == nil || [_baseFrames objectForKey:selector] == nil) {
+            continue;
+        }
+        CGRect selectorFrame = [[_baseFrames objectForKey:selector] CGRectValue];
+        CGFloat top = CGRectGetMinY(selectorFrame);
+        [_hiddenViews addObject:selector];
+        for (UIView* view in _baseFrames) {
+            CGRect frame = [[_baseFrames objectForKey:view] CGRectValue];
+            if ([view isKindOfClass:[UILabel class]] && CGRectGetMaxY(frame) <= CGRectGetMinY(selectorFrame) + 2 &&
+                CGRectGetMinY(selectorFrame) - CGRectGetMinY(frame) < 45) {
+                [_hiddenViews addObject:view];
+                top = MIN(top, CGRectGetMinY(frame));
+            }
+        }
+        // The row ends where the next visible row starts
+        CGFloat next = CGFLOAT_MAX;
+        for (UIView* view in _baseFrames) {
+            CGFloat y = CGRectGetMinY([[_baseFrames objectForKey:view] CGRectValue]);
+            if (y > CGRectGetMaxY(selectorFrame) - 1 && ![_hiddenViews containsObject:view]) {
+                next = MIN(next, y);
+            }
+        }
+        if (next == CGFLOAT_MAX) {
+            next = CGRectGetMaxY(selectorFrame) + 8;
+        }
+        [removedSpans addObject:[NSValue valueWithCGPoint:CGPointMake(top, next - top)]];
+    }
+    
+    for (UIView* view in _baseFrames) {
+        CGFloat y = CGRectGetMinY([[_baseFrames objectForKey:view] CGRectValue]);
+        CGFloat shift = 0;
+        for (NSValue* span in removedSpans) {
+            if (span.CGPointValue.x < y && ![_hiddenViews containsObject:view]) {
+                shift += span.CGPointValue.y;
+            }
+        }
+        [_rowShifts setObject:@(shift) forKey:view];
+    }
+}
+
+// Translates the storyboard's fixed English text.
+- (void)localizeStoryboardText {
+    for (UIView* view in self.view.subviews) {
+        if ([view isKindOfClass:[UILabel class]]) {
+            UILabel* label = (UILabel*)view;
+            label.text = ML(label.text);
+        }
+        else if ([view isKindOfClass:[UISegmentedControl class]]) {
+            UISegmentedControl* control = (UISegmentedControl*)view;
+            for (NSUInteger i = 0; i < control.numberOfSegments; i++) {
+                [control setTitle:ML([control titleForSegmentAtIndex:i]) forSegmentAtIndex:i];
+            }
+        }
+    }
+}
+
 // This view is rooted at a ScrollView. To make it scrollable,
 // we'll update content size here.
 -(void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self layoutControlsForVisibleWidth];
+
     CGFloat highestViewY = 0;
     
     // Enumerate the scroll view's subviews looking for the
@@ -85,31 +220,25 @@ CGSize resolutionTable[RESOLUTION_TABLE_SIZE];
             continue;
         }
         
+        if (view.hidden) {
+            continue;
+        }
         CGFloat currentViewY = view.frame.origin.y + view.frame.size.height;
         if (currentViewY > highestViewY) {
             highestViewY = currentViewY;
         }
     }
     
-    // Add a bit of padding so the view doesn't end right at the button of the display
-    self.scrollView.contentSize = CGSizeMake(self.scrollView.contentSize.width,
+    // Add a bit of padding so the view doesn't end right at the button of the display.
+    // The controls always fit horizontally, so only allow vertical scrolling.
+    self.scrollView.contentSize = CGSizeMake(MIN(self.scrollView.contentSize.width, self.scrollView.bounds.size.width),
                                              highestViewY + 20);
 }
 
 // Adjust the subviews for the safe area on the iPhone X.
 - (void)viewSafeAreaInsetsDidChange {
     [super viewSafeAreaInsetsDidChange];
-    
-    if (@available(iOS 11.0, *)) {
-        for (UIView* view in self.view.subviews) {
-            // HACK: The official safe area is much too large for our purposes
-            // so we'll just use the presence of any safe area to indicate we should
-            // pad by 20.
-            if (self.view.safeAreaInsets.left >= 20 || self.view.safeAreaInsets.right >= 20) {
-                view.frame = CGRectMake(view.frame.origin.x + 20, view.frame.origin.y, view.frame.size.width, view.frame.size.height);
-            }
-        }
-    }
+    [self.view setNeedsLayout];
 }
 
 BOOL isCustomResolution(CGSize res) {
@@ -124,6 +253,12 @@ BOOL isCustomResolution(CGSize res) {
     }
     
     return YES;
+}
+
+// Settings is a tab now: save whenever another tab is chosen
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self saveSettings];
 }
 
 - (void)viewDidLoad {
@@ -143,9 +278,19 @@ BOOL isCustomResolution(CGSize res) {
     // Get the size of the screen with and without safe area insets
     UIWindow *window = UIApplication.sharedApplication.windows.firstObject;
     CGFloat screenScale = window.screen.scale;
-    CGFloat safeAreaWidth = (window.frame.size.width - window.safeAreaInsets.left - window.safeAreaInsets.right) * screenScale;
-    CGFloat fullScreenWidth = window.frame.size.width * screenScale;
-    CGFloat fullScreenHeight = window.frame.size.height * screenScale;
+    // Streaming is always landscape, even when settings load in portrait.
+    // The portrait top inset matches the landscape side insets of notched iPhones.
+    BOOL portrait = window.frame.size.height > window.frame.size.width;
+    CGFloat sideInsets = portrait ? window.safeAreaInsets.top * 2 : window.safeAreaInsets.left + window.safeAreaInsets.right;
+    if (portrait && (window.safeAreaInsets.top < 40 || UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone)) {
+        // A plain status bar inset is not a notch
+        sideInsets = 0;
+    }
+    CGFloat longSide = MAX(window.frame.size.width, window.frame.size.height);
+    CGFloat shortSide = MIN(window.frame.size.width, window.frame.size.height);
+    CGFloat safeAreaWidth = (longSide - sideInsets) * screenScale;
+    CGFloat fullScreenWidth = longSide * screenScale;
+    CGFloat fullScreenHeight = shortSide * screenScale;
     
     self.resolutionDisplayView.layer.cornerRadius = 10;
     self.resolutionDisplayView.clipsToBounds = YES;
@@ -233,7 +378,7 @@ BOOL isCustomResolution(CGSize res) {
     
     if (!VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC) || !(AVPlayer.availableHDRModes & AVPlayerHDRModeHDR10)) {
         [self.hdrSelector removeAllSegments];
-        [self.hdrSelector insertSegmentWithTitle:@"Unsupported on this device" atIndex:0 animated:NO];
+        [self.hdrSelector insertSegmentWithTitle:ML(@"Unsupported on this device") atIndex:0 animated:NO];
         [self.hdrSelector setEnabled:NO];
     }
     else {
@@ -255,19 +400,53 @@ BOOL isCustomResolution(CGSize res) {
     [self.resolutionSelector addTarget:self action:@selector(newResolutionChosen) forControlEvents:UIControlEventValueChanged];
     [self.framerateSelector setSelectedSegmentIndex:framerate];
     [self.framerateSelector addTarget:self action:@selector(updateBitrate) forControlEvents:UIControlEventValueChanged];
-    [self.onscreenControlSelector setSelectedSegmentIndex:onscreenControls];
-    [self.onscreenControlSelector setEnabled:!currentSettings.absoluteTouchMode];
+    // On-screen controls were removed; keep the stored setting off
+    (void)onscreenControls;
+    [self.onscreenControlSelector setSelectedSegmentIndex:0]; // "Off"
     [self.bitrateSlider setMinimumValue:0];
     [self.bitrateSlider setMaximumValue:(sizeof(bitrateTable) / sizeof(*bitrateTable)) - 1];
     [self.bitrateSlider setValue:[self getSliderValueForBitrate:_bitrate] animated:YES];
     [self.bitrateSlider addTarget:self action:@selector(bitrateSliderMoved) forControlEvents:UIControlEventValueChanged];
     [self updateBitrateText];
     [self updateResolutionDisplayViewText];
+    [self localizeStoryboardText];
+    
+    // Same grouped background as Home and the Tailscale screen
+    self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    self.resolutionDisplayView.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    
+    [self addKeyboardOnStartSetting];
+}
+
+// "Show keyboard when streaming starts" (portrait streams), after the
+// storyboard's last row. Stored in user defaults; on by default.
+- (void)addKeyboardOnStartSetting {
+    CGFloat bottom = 0;
+    for (UIView* view in self.view.subviews) {
+        if ([view isKindOfClass:[UILabel class]] || [view isKindOfClass:[UISegmentedControl class]]) {
+            bottom = MAX(bottom, CGRectGetMaxY(view.frame));
+        }
+    }
+    UILabel* title = [[UILabel alloc] initWithFrame:CGRectMake(22, bottom + 16, 450, 21)];
+    title.text = ML(@"Show Keyboard When Streaming Starts");
+    title.font = [UIFont boldSystemFontOfSize:17];
+    title.textColor = [UIColor colorWithRed:0.95 green:0.97 blue:1.0 alpha:1];
+    UISegmentedControl* selector = [[UISegmentedControl alloc] initWithItems:@[ML(@"No"), ML(@"Yes")]];
+    selector.frame = CGRectMake(16, bottom + 45, 450, 28);
+    // Same look as the storyboard selectors
+    selector.selectedSegmentTintColor = self.resolutionSelector.selectedSegmentTintColor;
+    selector.tintColor = self.resolutionSelector.tintColor;
+    NSNumber* stored = [[NSUserDefaults standardUserDefaults] objectForKey:@"ShowKeyboardOnStreamStart"];
+    selector.selectedSegmentIndex = (stored == nil || stored.boolValue) ? 1 : 0;
+    [selector addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+        UISegmentedControl* control = (UISegmentedControl*)action.sender;
+        [[NSUserDefaults standardUserDefaults] setBool:control.selectedSegmentIndex == 1 forKey:@"ShowKeyboardOnStreamStart"];
+    }] forControlEvents:UIControlEventValueChanged];
+    [self.view addSubview:title];
+    [self.view addSubview:selector];
 }
 
 - (void) touchModeChanged {
-    // Disable on-screen controls in absolute touch mode
-    [self.onscreenControlSelector setEnabled:[self.touchModeSelector selectedSegmentIndex] == 0];
 }
 
 - (void) updateBitrate {
@@ -345,10 +524,10 @@ BOOL isCustomResolution(CGSize res) {
 }
 
 - (void) promptCustomResolutionDialog {
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Enter Custom Resolution" message:nil preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:ML(@"Enter Custom Resolution") message:nil preferredStyle:UIAlertControllerStyleAlert];
 
     [alertController addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-        textField.placeholder = @"Video Width";
+        textField.placeholder = ML(@"Video Width");
         textField.clearButtonMode = UITextFieldViewModeAlways;
         textField.borderStyle = UITextBorderStyleRoundedRect;
         textField.keyboardType = UIKeyboardTypeNumberPad;
@@ -362,7 +541,7 @@ BOOL isCustomResolution(CGSize res) {
     }];
 
     [alertController addTextFieldWithConfigurationHandler:^(UITextField *textField) {
-        textField.placeholder = @"Video Height";
+        textField.placeholder = ML(@"Video Height");
         textField.clearButtonMode = UITextFieldViewModeAlways;
         textField.borderStyle = UITextBorderStyleRoundedRect;
         textField.keyboardType = UIKeyboardTypeNumberPad;
@@ -410,12 +589,12 @@ BOOL isCustomResolution(CGSize res) {
         [self updateResolutionDisplayViewText];
         self->_lastSelectedResolutionIndex = [self.resolutionSelector selectedSegmentIndex];
         
-        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"Custom Resolution Selected" message: @"Custom resolutions are not officially supported by GeForce Experience, so it will not set your host display resolution. You will need to set it manually while in game.\n\nResolutions that are not supported by your client or host PC may cause streaming errors." preferredStyle:UIAlertControllerStyleAlert];
+        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:ML(@"Custom Resolution Selected") message: @"Custom resolutions are not officially supported by GeForce Experience, so it will not set your host display resolution. You will need to set it manually while in game.\n\nResolutions that are not supported by your client or host PC may cause streaming errors." preferredStyle:UIAlertControllerStyleAlert];
         [alertController addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
         [self presentViewController:alertController animated:YES completion:nil];
     }]];
 
-    [alertController addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+    [alertController addAction:[UIAlertAction actionWithTitle:ML(@"Cancel") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
         // Restore the previous selection
         [self.resolutionSelector setSelectedSegmentIndex:self->_lastSelectedResolutionIndex];
     }]];
@@ -442,7 +621,7 @@ BOOL isCustomResolution(CGSize res) {
         [subview removeFromSuperview];
     }
     UILabel *label1 = [[UILabel alloc] init];
-    label1.text = @"Set PC/Game resolution: ";
+    label1.text = ML(@"Set PC/Game resolution: ");
     label1.font = [UIFont systemFontOfSize:fontSize];
     [label1 sizeToFit];
     label1.frame = CGRectMake(padding, (viewFrameHeight - label1.frame.size.height) / 2, label1.frame.size.width, label1.frame.size.height);
@@ -464,7 +643,7 @@ BOOL isCustomResolution(CGSize res) {
 
 - (void) updateBitrateText {
     // Display bitrate in Mbps
-    [self.bitrateLabel setText:[NSString stringWithFormat:bitrateFormat, _bitrate / 1000.]];
+    [self.bitrateLabel setText:[NSString stringWithFormat:ML(bitrateFormat), _bitrate / 1000.]];
 }
 
 - (NSInteger) getChosenFrameRate {
@@ -569,3 +748,448 @@ BOOL isCustomResolution(CGSize res) {
 
 
 @end
+
+
+#if !TARGET_OS_TV
+// Settings as an iOS-style list (like the Tailscale screen): pull-down menus
+// for choices, switches for on/off, a slider for the bitrate. Every change is
+// saved right away.
+@implementation MoonlightSettingsViewController {
+    NSArray<NSDictionary*>* _sections;
+    NSInteger _width, _height, _framerate, _bitrate;
+    uint32_t _codec;
+    BOOL _absoluteTouch, _optimizeGames, _multiController, _swapABXY, _audioOnPC;
+    BOOL _framePacing, _hdr, _btMouse, _statsOverlay;
+    CGSize _safeAreaSize, _fullScreenSize;
+}
+
+static NSInteger MLDefaultBitrate(NSInteger width, NSInteger height, NSInteger fps) {
+    // Same defaults as the original Moonlight settings (from Moonlight Qt)
+    float frameRateFactor = (fps <= 60 ? fps : (sqrtf(fps / 60.f) * 60.f)) / 30.f;
+    struct { NSInteger pixels; int factor; } table[] = {
+        { 640 * 360, 1 }, { 854 * 480, 2 }, { 1280 * 720, 5 }, { 1920 * 1080, 10 },
+        { 2560 * 1440, 20 }, { 3840 * 2160, 40 }, { -1, -1 }
+    };
+    float resolutionFactor = 1;
+    NSInteger pixels = width * height;
+    for (int i = 0;; i++) {
+        if (table[i].pixels == -1) { resolutionFactor = table[i - 1].factor; break; }
+        if (pixels == table[i].pixels) { resolutionFactor = table[i].factor; break; }
+        if (pixels < table[i].pixels) {
+            resolutionFactor = i == 0 ? table[0].factor :
+                ((float)(pixels - table[i - 1].pixels) / (table[i].pixels - table[i - 1].pixels)) * (table[i].factor - table[i - 1].factor) + table[i - 1].factor;
+            break;
+        }
+    }
+    return MIN(round(resolutionFactor * frameRateFactor) * 1000, 100000);
+}
+
+static int MLBitrateIndex(NSInteger bitrate) {
+    int count = (int)(sizeof(bitrateTable) / sizeof(*bitrateTable));
+    for (int i = 0; i < count; i++) {
+        if (bitrate <= bitrateTable[i]) return i;
+    }
+    return count - 1;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = self.duringStream ? ML(@"Streaming Settings") : ML(@"Settings");
+    if (self.duringStream) {
+        self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemDone target:self action:@selector(closeFromStream)];
+    }
+
+    TemporarySettings* settings = [[[DataManager alloc] init] getSettings];
+    _width = settings.width.integerValue;
+    _height = settings.height.integerValue;
+    _framerate = settings.framerate.integerValue ?: 60;
+    _bitrate = bitrateTable[MLBitrateIndex(settings.bitrate.integerValue)];
+    _codec = settings.preferredCodec;
+    _absoluteTouch = settings.absoluteTouchMode;
+    _optimizeGames = settings.optimizeGames;
+    _multiController = settings.multiController;
+    _swapABXY = settings.swapABXYButtons;
+    _audioOnPC = settings.playAudioOnPC;
+    _framePacing = settings.useFramePacing;
+    _hdr = settings.enableHdr;
+    _btMouse = settings.btMouseSupport;
+    _statsOverlay = settings.statsOverlay;
+
+    // "Safe area" and "full screen" sizes in landscape, the streaming orientation
+    UIWindowScene* scene = (UIWindowScene*)UIApplication.sharedApplication.connectedScenes.anyObject;
+    UIWindow* window = scene.windows.firstObject;
+    CGFloat scale = window.screen.scale ?: UIScreen.mainScreen.scale;
+    CGSize size = window ? window.bounds.size : UIScreen.mainScreen.bounds.size;
+    BOOL portrait = size.height > size.width;
+    UIEdgeInsets insets = window.safeAreaInsets;
+    CGFloat sideInsets = portrait ? insets.top * 2 : insets.left + insets.right;
+    if (portrait && (insets.top < 40 || UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPhone)) {
+        sideInsets = 0;
+    }
+    CGFloat longSide = MAX(size.width, size.height), shortSide = MIN(size.width, size.height);
+    _safeAreaSize = CGSizeMake((longSide - sideInsets) * scale, shortSide * scale);
+    _fullScreenSize = CGSizeMake(longSide * scale, shortSide * scale);
+
+    [self rebuild];
+}
+
+- (void)save {
+    [[[DataManager alloc] init] saveSettingsWithBitrate:_bitrate
+                                              framerate:_framerate
+                                                 height:_height
+                                                  width:_width
+                                            audioConfig:2 // Stereo
+                                       onscreenControls:0 // Removed from this app
+                                          optimizeGames:_optimizeGames
+                                        multiController:_multiController
+                                        swapABXYButtons:_swapABXY
+                                              audioOnPC:_audioOnPC
+                                         preferredCodec:_codec
+                                         useFramePacing:_framePacing
+                                              enableHdr:_hdr
+                                         btMouseSupport:_btMouse
+                                      absoluteTouchMode:_absoluteTouch
+                                           statsOverlay:_statsOverlay];
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    [self save];
+    if (self.onClose) {
+        self.onClose();
+    }
+}
+
+- (void)closeFromStream {
+    [self.navigationController dismissViewControllerAnimated:YES completion:nil];
+}
+
+// Changing resolution or frame rate resets the bitrate to its default, as before
+- (void)setResolutionWidth:(NSInteger)width height:(NSInteger)height {
+    _width = width;
+    _height = height;
+    _bitrate = bitrateTable[MLBitrateIndex(MLDefaultBitrate(_width, _height, _framerate))];
+    [self save];
+    [self rebuild];
+}
+
+#pragma mark - Rows
+
+- (NSString*)resolutionName {
+    struct { NSInteger w, h; NSString* name; } named[] = {
+        { 640, 360, @"360p" }, { 1280, 720, @"720p" }, { 1920, 1080, @"1080p" }, { 3840, 2160, @"4K" },
+    };
+    for (int i = 0; i < 4; i++) {
+        if (named[i].w == _width && named[i].h == _height) return named[i].name;
+    }
+    if (_width == (NSInteger)_safeAreaSize.width && _height == (NSInteger)_safeAreaSize.height) return ML(@"Safe Area");
+    if (_width == (NSInteger)_fullScreenSize.width && _height == (NSInteger)_fullScreenSize.height) return ML(@"Full");
+    return [NSString stringWithFormat:@"%ld×%ld", (long)_width, (long)_height];
+}
+
+- (NSString*)codecName:(uint32_t)codec {
+    switch (codec) {
+        case CODEC_PREF_H264: return @"H.264";
+        case CODEC_PREF_HEVC: return @"HEVC";
+        case CODEC_PREF_AV1: return @"AV1";
+        default: return ML(@"Auto");
+    }
+}
+
+- (UIMenu*)resolutionMenu {
+    __weak typeof(self) weakSelf = self;
+    NSMutableArray* items = [NSMutableArray array];
+    NSArray* sizes = @[@[@"360p", @640, @360], @[@"720p", @1280, @720], @[@"1080p", @1920, @1080], @[@"4K", @3840, @2160],
+                       @[ML(@"Safe Area"), @(_safeAreaSize.width), @(_safeAreaSize.height)],
+                       @[ML(@"Full"), @(_fullScreenSize.width), @(_fullScreenSize.height)]];
+    BOOL hevc = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC);
+    for (NSArray* entry in sizes) {
+        NSInteger width = [entry[1] integerValue], height = [entry[2] integerValue];
+        NSString* title = [entry[0] hasSuffix:@"p"] || [entry[0] isEqualToString:@"4K"] ? entry[0] :
+            [NSString stringWithFormat:@"%@（%ld×%ld）", entry[0], (long)width, (long)height];
+        UIAction* action = [UIAction actionWithTitle:title image:nil identifier:nil handler:^(__kindof UIAction* a) {
+            [weakSelf setResolutionWidth:width height:height];
+        }];
+        action.state = width == _width && height == _height ? UIMenuElementStateOn : UIMenuElementStateOff;
+        if (width == 3840 && !hevc) {
+            // 4K needs a device that decodes HEVC (A9 or later)
+            action.attributes = UIMenuElementAttributesDisabled;
+        }
+        [items addObject:action];
+    }
+    [items addObject:[UIAction actionWithTitle:ML(@"Custom…") image:nil identifier:nil handler:^(__kindof UIAction* a) {
+        [weakSelf promptCustomResolution];
+    }]];
+    return [UIMenu menuWithChildren:items];
+}
+
+- (void)promptCustomResolution {
+    UIAlertController* alert = [UIAlertController alertControllerWithTitle:ML(@"Enter Custom Resolution") message:nil preferredStyle:UIAlertControllerStyleAlert];
+    for (NSString* placeholder in @[ML(@"Video Width"), ML(@"Video Height")]) {
+        [alert addTextFieldWithConfigurationHandler:^(UITextField* field) {
+            field.placeholder = placeholder;
+            field.keyboardType = UIKeyboardTypeNumberPad;
+        }];
+    }
+    alert.textFields[0].text = [NSString stringWithFormat:@"%ld", (long)_width];
+    alert.textFields[1].text = [NSString stringWithFormat:@"%ld", (long)_height];
+    [alert addAction:[UIAlertAction actionWithTitle:ML(@"Cancel") style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:ML(@"OK") style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
+        NSInteger width = alert.textFields[0].text.integerValue, height = alert.textFields[1].text.integerValue;
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        // Even sizes within what decoders handle
+        width = MAX(256, MIN(width, 7680)) & ~1;
+        height = MAX(256, MIN(height, 4320)) & ~1;
+        [self setResolutionWidth:width height:height];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (UIMenu*)choiceMenuWithTitles:(NSArray<NSString*>*)titles values:(NSArray<NSNumber*>*)values current:(NSInteger)current handler:(void (^)(NSInteger value))handler {
+    NSMutableArray* items = [NSMutableArray array];
+    for (NSUInteger i = 0; i < titles.count; i++) {
+        NSInteger value = values[i].integerValue;
+        UIAction* action = [UIAction actionWithTitle:titles[i] image:nil identifier:nil handler:^(__kindof UIAction* a) {
+            handler(value);
+        }];
+        action.state = value == current ? UIMenuElementStateOn : UIMenuElementStateOff;
+        [items addObject:action];
+    }
+    return [UIMenu menuWithChildren:items];
+}
+
+- (void)rebuild {
+    __weak typeof(self) weakSelf = self;
+    BOOL hevc = VTIsHardwareDecodeSupported(kCMVideoCodecType_HEVC);
+    BOOL av1 = NO;
+#if defined(__IPHONE_16_0)
+    av1 = VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1);
+#endif
+    BOOL hdrSupported = hevc && (AVPlayer.availableHDRModes & AVPlayerHDRModeHDR10);
+    BOOL fps120 = UIScreen.mainScreen.maximumFramesPerSecond > 62;
+
+    NSMutableArray* fpsTitles = [NSMutableArray arrayWithArray:@[@"30 FPS", @"60 FPS"]];
+    NSMutableArray* fpsValues = [NSMutableArray arrayWithArray:@[@30, @60]];
+    if (fps120) {
+        [fpsTitles addObject:@"120 FPS"];
+        [fpsValues addObject:@120];
+    }
+    NSMutableArray* codecTitles = [NSMutableArray arrayWithArray:@[ML(@"Auto"), @"H.264"]];
+    NSMutableArray* codecValues = [NSMutableArray arrayWithArray:@[@(CODEC_PREF_AUTO), @(CODEC_PREF_H264)]];
+    if (hevc) { [codecTitles addObject:@"HEVC"]; [codecValues addObject:@(CODEC_PREF_HEVC)]; }
+    if (av1) { [codecTitles addObject:@"AV1"]; [codecValues addObject:@(CODEC_PREF_AV1)]; }
+
+    NSNumber* keyboardSetting = [[NSUserDefaults standardUserDefaults] objectForKey:@"ShowKeyboardOnStreamStart"];
+    BOOL keyboardOnStart = keyboardSetting == nil || keyboardSetting.boolValue;
+
+    _sections = @[
+        @{@"title": ML(@"Video"), @"footer": ML(@"Higher resolution and bitrate look sharper but need a faster connection. Changing the resolution or frame rate resets the bitrate to a suitable value."), @"rows": @[
+            @{@"title": ML(@"Resolution"), @"value": [self resolutionName], @"menu": [self resolutionMenu]},
+            @{@"title": ML(@"Picture Size"), @"detail": ML(@"Fill covers the whole screen and cuts what does not fit; pinch to see the edges. Stretch fills without cutting but distorts the picture."),
+              @"value": @[ML(@"Fit (whole picture)"), ML(@"Fill (crop edges)"), ML(@"Stretch")][MLVideoFillMode()],
+              @"menu": [self choiceMenuWithTitles:@[ML(@"Fit (whole picture)"), ML(@"Fill (crop edges)"), ML(@"Stretch")] values:@[@0, @1, @2]
+                                          current:MLVideoFillMode()
+                                          handler:^(NSInteger value) {
+                  [[NSUserDefaults standardUserDefaults] setInteger:value forKey:MLVideoFillModeKey];
+                  [weakSelf rebuild];
+              }]},
+            @{@"title": ML(@"Frame Rate"), @"value": [NSString stringWithFormat:@"%ld FPS", (long)_framerate],
+              @"menu": [self choiceMenuWithTitles:fpsTitles values:fpsValues current:_framerate handler:^(NSInteger value) {
+                  typeof(self) s = weakSelf; s->_framerate = value;
+                  [s setResolutionWidth:s->_width height:s->_height];
+              }]},
+            @{@"title": ML(@"Bitrate"), @"slider": @YES},
+            @{@"title": ML(@"Preferred Codec"), @"value": [self codecName:_codec],
+              @"menu": [self choiceMenuWithTitles:codecTitles values:codecValues current:_codec handler:^(NSInteger value) {
+                  typeof(self) s = weakSelf; s->_codec = (uint32_t)value; [s save]; [s rebuild];
+              }]},
+            @{@"title": ML(@"HDR (Beta)"), @"switch": @(_hdr), @"enabled": @(hdrSupported), @"detail": hdrSupported ? @"" : ML(@"Unsupported on this device"),
+              @"toggle": ^(BOOL on) { typeof(self) s = weakSelf; s->_hdr = on; [s save]; }},
+            @{@"title": ML(@"Frame Pacing Preference"), @"value": _framePacing ? ML(@"Smoothest Video") : ML(@"Lowest Latency"),
+              @"menu": [self choiceMenuWithTitles:@[ML(@"Lowest Latency"), ML(@"Smoothest Video")] values:@[@0, @1] current:_framePacing handler:^(NSInteger value) {
+                  typeof(self) s = weakSelf; s->_framePacing = value == 1; [s save]; [s rebuild];
+              }]},
+            @{@"title": ML(@"Statistics Overlay"), @"switch": @(_statsOverlay),
+              @"toggle": ^(BOOL on) { typeof(self) s = weakSelf; s->_statsOverlay = on; [s save]; }},
+        ]},
+        @{@"title": ML(@"Input"), @"footer": ML(@"Touchpad moves the pointer like a laptop trackpad. Touchscreen clicks where you touch."), @"rows": @[
+            @{@"title": @"開始時に映像移動をON", @"switch": @(MLBoolPreference(MLPanOnStartKey, YES)),
+              @"toggle": ^(BOOL on) { [NSUserDefaults.standardUserDefaults setBool:on forKey:MLPanOnStartKey]; }},
+            @{@"title": @"横画面でキーボードに合わせて映像を上へ移動", @"switch": @(MLBoolPreference(MLShiftForKeyboardKey, NO)),
+              @"detail": @"キーボードを閉じると元の位置へ戻ります。",
+              @"toggle": ^(BOOL on) { [NSUserDefaults.standardUserDefaults setBool:on forKey:MLShiftForKeyboardKey]; }},
+            @{@"title": @"文字入力", @"value": @"入力欄で変換して送信",
+              @"detail": @"iPhoneで変換し、送信ボタンでまとめて送ります。"},
+            @{@"title": @"文字送信時にPCのIMEをOFF", @"switch": @(MLBoolPreference(MLImeOffBeforeTextSendKey, YES)),
+              @"detail": @"送信ボタンを押すと、IME OFF、文字列の順に送ります。送信後もAのままにします。Windows以外ではOFFにしてください。",
+              @"toggle": ^(BOOL on) { [NSUserDefaults.standardUserDefaults setBool:on forKey:MLImeOffBeforeTextSendKey]; }},
+            @{@"title": ML(@"Touch Mode"), @"value": _absoluteTouch ? ML(@"Touchscreen") : ML(@"Touchpad"),
+              @"menu": [self choiceMenuWithTitles:@[ML(@"Touchpad"), ML(@"Touchscreen")] values:@[@0, @1] current:_absoluteTouch handler:^(NSInteger value) {
+                  typeof(self) s = weakSelf; s->_absoluteTouch = value == 1; [s save]; [s rebuild];
+              }]},
+            @{@"title": ML(@"Show Keyboard When Streaming Starts"), @"switch": @(keyboardOnStart),
+              @"toggle": ^(BOOL on) { [[NSUserDefaults standardUserDefaults] setBool:on forKey:@"ShowKeyboardOnStreamStart"]; }},
+            @{@"title": ML(@"Citrix X1 Mouse Support"), @"switch": @(_btMouse),
+              @"toggle": ^(BOOL on) { typeof(self) s = weakSelf; s->_btMouse = on; [s save]; }},
+        ]},
+        @{@"title": ML(@"Trackpad"), @"footer": ML(@"Pointer speed applies to the trackpad under the picture. Resolution and codec changes apply from the next stream."), @"rows": @[
+            @{@"title": ML(@"Pointer Speed"), @"speed": @YES},
+            @{@"title": ML(@"Close Button Position (Portrait)"),
+              @"value": [[NSUserDefaults standardUserDefaults] boolForKey:MLControlsOnRightKey] ? ML(@"Right") : ML(@"Left"),
+              @"menu": [self choiceMenuWithTitles:@[ML(@"Left"), ML(@"Right")] values:@[@0, @1]
+                                          current:[[NSUserDefaults standardUserDefaults] boolForKey:MLControlsOnRightKey]
+                                          handler:^(NSInteger value) {
+                  [[NSUserDefaults standardUserDefaults] setBool:value == 1 forKey:MLControlsOnRightKey];
+                  [weakSelf rebuild];
+              }]},
+        ]},
+        @{@"title": ML(@"PC"), @"footer": @"", @"rows": @[
+            @{@"title": ML(@"Play Audio on PC"), @"switch": @(_audioOnPC),
+              @"toggle": ^(BOOL on) { typeof(self) s = weakSelf; s->_audioOnPC = on; [s save]; }},
+            @{@"title": ML(@"Optimize Game Settings"), @"switch": @(_optimizeGames),
+              @"toggle": ^(BOOL on) { typeof(self) s = weakSelf; s->_optimizeGames = on; [s save]; }},
+        ]},
+    ];
+    [self.tableView reloadData];
+}
+
+#pragma mark - Table view
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView*)tableView {
+    return _sections.count;
+}
+
+- (NSInteger)tableView:(UITableView*)tableView numberOfRowsInSection:(NSInteger)section {
+    return [_sections[section][@"rows"] count];
+}
+
+- (NSString*)tableView:(UITableView*)tableView titleForHeaderInSection:(NSInteger)section {
+    return _sections[section][@"title"];
+}
+
+- (NSString*)tableView:(UITableView*)tableView titleForFooterInSection:(NSInteger)section {
+    NSString* footer = _sections[section][@"footer"];
+    return footer.length ? footer : nil;
+}
+
+- (UITableViewCell*)tableView:(UITableView*)tableView cellForRowAtIndexPath:(NSIndexPath*)indexPath {
+    NSDictionary* row = _sections[indexPath.section][@"rows"][indexPath.row];
+    UITableViewCell* cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.textLabel.text = row[@"title"];
+    cell.textLabel.numberOfLines = 0;
+    NSString* detail = row[@"detail"];
+    cell.detailTextLabel.text = detail.length ? detail : nil;
+    cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+
+    if (row[@"menu"] != nil) {
+        UIButtonConfiguration* config = [UIButtonConfiguration plainButtonConfiguration];
+        config.title = row[@"value"];
+        config.image = [UIImage systemImageNamed:@"chevron.up.chevron.down"];
+        config.imagePlacement = NSDirectionalRectEdgeTrailing;
+        config.imagePadding = 4;
+        config.preferredSymbolConfigurationForImage = [UIImageSymbolConfiguration configurationWithPointSize:11 weight:UIImageSymbolWeightSemibold];
+        config.baseForegroundColor = UIColor.secondaryLabelColor;
+        config.contentInsets = NSDirectionalEdgeInsetsZero;
+        UIButton* button = [UIButton buttonWithConfiguration:config primaryAction:nil];
+        button.menu = row[@"menu"];
+        button.showsMenuAsPrimaryAction = YES;
+        [button sizeToFit];
+        cell.accessoryView = button;
+    }
+    else if (row[@"switch"] != nil) {
+        UISwitch* toggle = [[UISwitch alloc] init];
+        toggle.on = [row[@"switch"] boolValue];
+        toggle.enabled = row[@"enabled"] == nil || [row[@"enabled"] boolValue];
+        void (^handler)(BOOL) = row[@"toggle"];
+        [toggle addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+            handler(((UISwitch*)action.sender).isOn);
+        }] forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggle;
+    }
+    else if ([row[@"speed"] boolValue]) {
+        // Pointer speed: 0.5x to 4x in 0.25 steps
+        UILabel* title = [[UILabel alloc] init];
+        title.text = row[@"title"];
+        title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        UILabel* value = [[UILabel alloc] init];
+        value.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        value.textColor = UIColor.secondaryLabelColor;
+        value.textAlignment = NSTextAlignmentRight;
+        value.text = [NSString stringWithFormat:@"%.2f×", MLTrackpadSpeed()];
+        UISlider* slider = [[UISlider alloc] init];
+        slider.minimumValue = 0.5;
+        slider.maximumValue = 4.0;
+        slider.value = MLTrackpadSpeed();
+        slider.minimumValueImage = [UIImage systemImageNamed:@"tortoise"];
+        slider.maximumValueImage = [UIImage systemImageNamed:@"hare"];
+        [slider addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+            UISlider* s = (UISlider*)action.sender;
+            double speed = round(s.value * 4) / 4;
+            [[NSUserDefaults standardUserDefaults] setDouble:speed forKey:MLTrackpadSpeedKey];
+            value.text = [NSString stringWithFormat:@"%.2f×", speed];
+        }] forControlEvents:UIControlEventValueChanged];
+        UIStackView* top = [[UIStackView alloc] initWithArrangedSubviews:@[title, value]];
+        UIStackView* stack = [[UIStackView alloc] initWithArrangedSubviews:@[top, slider]];
+        stack.axis = UILayoutConstraintAxisVertical;
+        stack.spacing = 8;
+        stack.translatesAutoresizingMaskIntoConstraints = NO;
+        cell.textLabel.text = nil;
+        [cell.contentView addSubview:stack];
+        UILayoutGuide* margins = cell.contentView.layoutMarginsGuide;
+        [NSLayoutConstraint activateConstraints:@[
+            [stack.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
+            [stack.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
+            [stack.topAnchor constraintEqualToAnchor:margins.topAnchor],
+            [stack.bottomAnchor constraintEqualToAnchor:margins.bottomAnchor],
+        ]];
+    }
+    else if ([row[@"slider"] boolValue]) {
+        // "Bitrate   10.0 Mbps" with the slider underneath
+        cell.textLabel.text = nil;
+        UILabel* title = [[UILabel alloc] init];
+        title.text = row[@"title"];
+        title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        UILabel* value = [[UILabel alloc] init];
+        value.text = [NSString stringWithFormat:@"%.1f Mbps", _bitrate / 1000.0];
+        value.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        value.textColor = UIColor.secondaryLabelColor;
+        value.textAlignment = NSTextAlignmentRight;
+        UISlider* slider = [[UISlider alloc] init];
+        slider.minimumValue = 0;
+        slider.maximumValue = (sizeof(bitrateTable) / sizeof(*bitrateTable)) - 1;
+        slider.value = MLBitrateIndex(_bitrate);
+        __weak typeof(self) weakSelf = self;
+        [slider addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+            UISlider* s = (UISlider*)action.sender;
+            int index = (int)lroundf(s.value);
+            typeof(self) strongSelf = weakSelf;
+            strongSelf->_bitrate = bitrateTable[index];
+            value.text = [NSString stringWithFormat:@"%.1f Mbps", strongSelf->_bitrate / 1000.0];
+        }] forControlEvents:UIControlEventValueChanged];
+        [slider addAction:[UIAction actionWithHandler:^(__kindof UIAction* action) {
+            UISlider* s = (UISlider*)action.sender;
+            s.value = lroundf(s.value); // snap to a notch
+            [weakSelf save];
+        }] forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+        UIStackView* top = [[UIStackView alloc] initWithArrangedSubviews:@[title, value]];
+        UIStackView* stack = [[UIStackView alloc] initWithArrangedSubviews:@[top, slider]];
+        stack.axis = UILayoutConstraintAxisVertical;
+        stack.spacing = 8;
+        stack.translatesAutoresizingMaskIntoConstraints = NO;
+        [cell.contentView addSubview:stack];
+        UILayoutGuide* margins = cell.contentView.layoutMarginsGuide;
+        [NSLayoutConstraint activateConstraints:@[
+            [stack.leadingAnchor constraintEqualToAnchor:margins.leadingAnchor],
+            [stack.trailingAnchor constraintEqualToAnchor:margins.trailingAnchor],
+            [stack.topAnchor constraintEqualToAnchor:margins.topAnchor],
+            [stack.bottomAnchor constraintEqualToAnchor:margins.bottomAnchor],
+        ]];
+    }
+    return cell;
+}
+
+@end
+#endif

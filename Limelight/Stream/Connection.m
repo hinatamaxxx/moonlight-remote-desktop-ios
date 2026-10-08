@@ -7,6 +7,10 @@
 //
 
 #import "Connection.h"
+#if !TARGET_OS_TV
+#import "EmbeddedTailscale.h"
+#endif
+
 #import "Utils.h"
 
 #import <VideoToolbox/VideoToolbox.h>
@@ -404,6 +408,11 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     }
     
     NSString *rawAddress = [Utils addressPortStringToAddress:config.host];
+    BOOL embeddedTailscale = NO;
+#if !TARGET_OS_TV
+    embeddedTailscale = [EmbeddedTailscale matchesAddress:rawAddress];
+    rawAddress = [EmbeddedTailscale routedAddress:rawAddress];
+#endif
     strncpy(_hostString,
             [rawAddress cStringUsingEncoding:NSUTF8StringEncoding],
             sizeof(_hostString) - 1);
@@ -448,7 +457,7 @@ void ClSetControllerLED(uint16_t controllerNumber, uint8_t r, uint8_t g, uint8_t
     // need to check for that here.
     _streamConfig.encryptionFlags = ENCFLG_ALL;
     
-    if ([Utils isActiveNetworkVPN]) {
+    if (embeddedTailscale || [Utils isActiveNetworkVPN]) {
         // Force remote streaming mode when a VPN is connected
         _streamConfig.streamingRemotely = STREAM_CFG_REMOTE;
         _streamConfig.packetSize = 1024;

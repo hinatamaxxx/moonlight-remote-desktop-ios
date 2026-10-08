@@ -7,6 +7,10 @@
 //
 
 #import "DiscoveryWorker.h"
+#if !TARGET_OS_TV
+#import "EmbeddedTailscale.h"
+#endif
+
 #import "Utils.h"
 #import "HttpManager.h"
 #import "ServerInfoResponse.h"
@@ -41,6 +45,31 @@ static const float POLL_RATE = 2.0f; // Poll every 2 seconds
 }
 
 - (NSArray*) getHostAddressList {
+#if !TARGET_OS_TV
+    // A PC added through Tailscale: use its LAN address directly when that
+    // answers (same network, no relay), otherwise the Tailscale route. The
+    // advertised WAN address is never used for it.
+    if ([EmbeddedTailscale matchesAddress:_host.address]) {
+        NSInteger preference = [EmbeddedTailscale routePreferenceForHost:_host];
+        NSMutableArray *addresses = [NSMutableArray array];
+        // On cellular a LAN address cannot answer; go straight to Tailscale
+        if (preference != 2 && [EmbeddedTailscale onLocalNetwork]) {
+            // Tailscale tells us the PC's LAN address while both are on the
+            // same network; try that first, then a remembered local address.
+            NSString *learned = [EmbeddedTailscale lanAddressForPeer:_host.address];
+            for (NSString *address in @[learned ?: @"", _host.localAddress ?: @"", _host.ipv6Address ?: @""]) {
+                if (address.length && ![address isEqualToString:_host.address] &&
+                    ![EmbeddedTailscale isTailscaleAddress:address] && ![addresses containsObject:address]) {
+                    [addresses addObject:address];
+                }
+            }
+        }
+        if (preference != 1 || addresses.count == 0) {
+            [addresses addObject:_host.address];
+        }
+        return addresses;
+    }
+#endif
     NSMutableArray *array = [[NSMutableArray alloc] initWithCapacity:3];
 
     if (_host.localAddress != nil) {
@@ -104,7 +133,17 @@ static const float POLL_RATE = 2.0f; // Poll every 2 seconds
             receivedResponse = [self checkResponse:serverInfoResp];
             if (receivedResponse) {
                 _host.activeAddress = address;
+#if !TARGET_OS_TV
+                // Reached over Tailscale, Sunshine reports its Tailscale
+                // address as the local one; keep the real LAN address.
+                NSString *previousLocal = _host.localAddress;
+#endif
                 [serverInfoResp populateHost:_host];
+#if !TARGET_OS_TV
+                if ([EmbeddedTailscale isTailscaleAddress:_host.localAddress]) {
+                    _host.localAddress = [EmbeddedTailscale isTailscaleAddress:previousLocal] ? nil : previousLocal;
+                }
+#endif
                 
                 // Update the database using the response
                 DataManager *dataManager = [[DataManager alloc] init];

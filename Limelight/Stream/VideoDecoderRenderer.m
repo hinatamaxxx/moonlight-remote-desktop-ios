@@ -35,6 +35,8 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
     
     CADisplayLink* _displayLink;
     BOOL framePacing;
+    uint64_t diagnosticTicks;
+    uint64_t diagnosticFrames;
 }
 
 - (void)reinitializeDisplayLayer
@@ -49,12 +51,8 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
     // respects the PAR encoded in the SPS which causes our computed video-relative
     // touch location to be wrong in StreamView if the aspect ratio of the host
     // desktop doesn't match the aspect ratio of the stream.
-    CGSize videoSize;
-    if (_view.bounds.size.width > _view.bounds.size.height * _streamAspectRatio) {
-        videoSize = CGSizeMake(_view.bounds.size.height * _streamAspectRatio, _view.bounds.size.height);
-    } else {
-        videoSize = CGSizeMake(_view.bounds.size.width, _view.bounds.size.width / _streamAspectRatio);
-    }
+    // Same area StreamView maps touches to (fit, fill or stretch)
+    CGSize videoSize = [_view getVideoAreaSize];
     displayLayer.position = CGPointMake(CGRectGetMidX(_view.bounds), CGRectGetMidY(_view.bounds));
     displayLayer.bounds = CGRectMake(0, 0, videoSize.width, videoSize.height);
     displayLayer.videoGravity = AVLayerVideoGravityResize;
@@ -108,7 +106,9 @@ extern int ff_isom_write_av1c(AVIOContext *pb, const uint8_t *buf, int size,
     else {
         _displayLink.preferredFramesPerSecond = self->frameRate;
     }
-    [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+    // Common modes: keep presenting frames while a scroll view, the keyboard
+    // or a pinch zoom puts the run loop in tracking mode
+    [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
 }
 
 // TODO: Refactor this
@@ -116,10 +116,12 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
 
 - (void)displayLinkCallback:(CADisplayLink *)sender
 {
+    diagnosticTicks++;
     VIDEO_FRAME_HANDLE handle;
     PDECODE_UNIT du;
     
     while (LiPollNextVideoFrame(&handle, &du)) {
+        diagnosticFrames++;
         LiCompleteVideoFrame(handle, DrSubmitDecodeUnit(du));
         
         if (framePacing) {
@@ -137,6 +139,12 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
                 }
             }
         }
+    }
+    if (diagnosticTicks == 1 || diagnosticTicks % 300 == 0) {
+        Log(LOG_I, @"Video diagnostic ticks=%llu frames=%llu pending=%d status=%ld ready=%d hidden=%d view=%@ layer=%@ error=%@",
+            diagnosticTicks, diagnosticFrames, LiGetPendingVideoFrames(), (long)displayLayer.status,
+            displayLayer.readyForDisplay, displayLayer.hidden, NSStringFromCGRect(_view.bounds),
+            NSStringFromCGRect(displayLayer.frame), displayLayer.error);
     }
 }
 
@@ -515,6 +523,9 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         return DR_NEED_IDR;
     }
     
+    CMVideoDimensions pictureSize = CMVideoFormatDescriptionGetDimensions(formatDesc);
+    [_view updateVideoSize:CGSizeMake(pictureSize.width, pictureSize.height)];
+
     // Check for previous decoder errors before doing anything
     if (displayLayer.status == AVQueuedSampleBufferRenderingStatusFailed) {
         Log(LOG_E, @"Display layer rendering failed: %@", displayLayer.error);
@@ -593,6 +604,14 @@ int DrSubmitDecodeUnit(PDECODE_UNIT decodeUnit);
         CFRelease(frameBlockBuffer);
         return DR_NEED_IDR;
     }
+
+    // Moonlight's PTS is relative to the first captured frame, whereas an
+    // AVSampleBufferDisplayLayer without a controlTimebase uses host uptime.
+    // CADisplayLink already paces submission; do not schedule these relative
+    // timestamps on a second, unrelated clock (which can hold/drop frames).
+    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, true);
+    CFMutableDictionaryRef sampleAttachments = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+    CFDictionarySetValue(sampleAttachments, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
 
     // Enqueue the next frame
     [self->displayLayer enqueueSampleBuffer:sampleBuffer];

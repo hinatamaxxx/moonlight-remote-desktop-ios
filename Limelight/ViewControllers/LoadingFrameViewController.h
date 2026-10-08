@@ -17,4 +17,6 @@
 - (BOOL)isShown;
 
 @property (weak, nonatomic) IBOutlet UIActivityIndicatorView *loadingSpinner;
+// What is happening, shown under the spinner
+@property (copy, nonatomic) NSString *message;
 @end
