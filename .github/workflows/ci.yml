@@ -46,11 +46,12 @@ jobs:
         run: |
           (cd TailscaleBridge && go test -race -count=1 ./... && go vet ./...)
           arch=$(uname -m)
+          echo "XCODE_ARCH=$arch" >> "$GITHUB_ENV"
           if [[ "$arch" == x86_64 ]]; then arch=amd64; fi
           bash TailscaleBridge/build-apple.sh iphonesimulator "$arch"
 
       - name: Build Debug
-        run: xcodebuild -project Moonlight.xcodeproj -scheme "${{ matrix.scheme }}" -configuration Debug -sdk ${{ matrix.sdk }} ONLY_ACTIVE_ARCH=YES clean build
+        run: xcodebuild -project Moonlight.xcodeproj -scheme "${{ matrix.scheme }}" -configuration Debug -sdk ${{ matrix.sdk }} -destination 'generic/platform=iOS Simulator' ARCHS="$XCODE_ARCH" ONLY_ACTIVE_ARCH=YES clean build
 
       - name: Build Release
-        run: xcodebuild -project Moonlight.xcodeproj -scheme "${{ matrix.scheme }}" -configuration Release -sdk ${{ matrix.sdk }} ONLY_ACTIVE_ARCH=YES clean build
+        run: xcodebuild -project Moonlight.xcodeproj -scheme "${{ matrix.scheme }}" -configuration Release -sdk ${{ matrix.sdk }} -destination 'generic/platform=iOS Simulator' ARCHS="$XCODE_ARCH" ONLY_ACTIVE_ARCH=YES clean build
