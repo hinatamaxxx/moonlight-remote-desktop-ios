@@ -59,10 +59,18 @@
     return _containsDeleteAnchor && [text hasPrefix:@"\u200B"] ? [text substringFromIndex:1] : text;
 }
 
+- (NSDictionary<NSAttributedStringKey, id> *)composeTextAttributes {
+    return @{NSFontAttributeName: [UIFont preferredFontForTextStyle:UIFontTextStyleBody],
+             NSForegroundColorAttributeName: UIColor.whiteColor};
+}
+
 - (void)setDraftText:(NSString *)text {
     _containsDeleteAnchor = YES;
-    [super setText:[@"\u200B" stringByAppendingString:text ?: @""]];
+    NSDictionary *attributes = [self composeTextAttributes];
+    [super setAttributedText:[[NSAttributedString alloc]
+        initWithString:[@"\u200B" stringByAppendingString:text ?: @""] attributes:attributes]];
     self.selectedRange = NSMakeRange(self.text.length, 0);
+    self.typingAttributes = attributes;
     self.accessibilityValue = text ?: @"";
 }
 
@@ -74,7 +82,10 @@
         NSRange selection = self.selectedRange;
         BOOL undoEnabled = self.undoManager.isUndoRegistrationEnabled;
         if (undoEnabled) [self.undoManager disableUndoRegistration];
-        [self.textStorage replaceCharactersInRange:NSMakeRange(0, 0) withString:@"\u200B"];
+        // An empty text storage has no attributes to inherit. Plain insertion
+        // would reset subsequent typing to UIKit's default small black font.
+        [self.textStorage insertAttributedString:[[NSAttributedString alloc]
+            initWithString:@"\u200B" attributes:[self composeTextAttributes]] atIndex:0];
         _containsDeleteAnchor = YES;
         if (selection.location != NSNotFound) {
             self.selectedRange = NSMakeRange(selection.location + 1, selection.length);
@@ -82,6 +93,7 @@
         if (undoEnabled) [self.undoManager enableUndoRegistration];
         _restoringDeleteAnchor = NO;
     }
+    self.typingAttributes = [self composeTextAttributes];
     self.accessibilityValue = self.draftText;
 }
 

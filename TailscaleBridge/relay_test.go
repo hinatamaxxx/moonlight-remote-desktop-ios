@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -133,6 +134,12 @@ func TestTCPHalfClose(t *testing.T) {
 	}
 }
 func TestUDPDatagramsAndIndependentClients(t *testing.T) {
+	sizes := []int{0, 1, 17, 1024, 8192}
+	// Darwin limits local UDP sends to 9216 bytes by default. Keep the
+	// large-datagram check on Linux/other hosts without changing kernel settings.
+	if runtime.GOOS != "darwin" && runtime.GOOS != "ios" {
+		sizes = append(sizes, 65000)
+	}
 	server, e := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if e != nil {
 		t.Fatal(e)
@@ -167,7 +174,7 @@ func TestUDPDatagramsAndIndependentClients(t *testing.T) {
 			}
 			defer c.Close()
 			c.SetDeadline(time.Now().Add(5 * time.Second))
-			for _, size := range []int{0, 1, 17, 1024, 65000} {
+			for _, size := range sizes {
 				b := bytes.Repeat([]byte{byte(id + 1)}, size)
 				if _, e = c.Write(b); e != nil {
 					t.Error(e)
