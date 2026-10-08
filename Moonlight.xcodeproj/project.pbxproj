@@ -171,6 +171,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        AABBAABB0000000000000004 /* Localization.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Localization.h; sourceTree = "<group>"; };
         AABBAABB0000000000000003 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = Limelight/Network/EmbeddedTailscale.h; sourceTree = SOURCE_ROOT; };
         AABBAABB0000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = Limelight/Network/EmbeddedTailscale.m; sourceTree = SOURCE_ROOT; };
 		566E9D2B2770B23A00EF7BFE /* Moonlight v1.7.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = "Moonlight v1.7.xcdatamodel"; sourceTree = "<group>"; };
@@ -563,6 +564,7 @@
 		FB89461E19F646E200339C8A /* Utility */ = {
 			isa = PBXGroup;
 			children = (
+				AABBAABB0000000000000004 /* Localization.h */,
 				FB89462119F646E200339C8A /* Utils.h */,
 				FB89462219F646E200339C8A /* Utils.m */,
 				FBD1C8E01A8AD69E00C6703C /* Logger.h */,
